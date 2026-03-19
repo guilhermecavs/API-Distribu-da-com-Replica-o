@@ -1,0 +1,73 @@
+# docker-compose.yml
+# Sobe 3 contêineres: primário, backup e Nginx (gateway)
+#
+# Topologia:
+#   [Cliente] → :80 (Nginx) → :8080 (primário) → :8081 (backup)
+#
+# Como usar:
+#   docker compose up --build          # sobe tudo
+#   docker compose logs -f primario    # logs do primário
+#   docker compose stop primario       # simula falha física
+
+version: "3.9"
+
+services:
+
+  # ── Nó Primário ──────────────────────────────────────────────────────────────
+  primario:
+    build: .
+    container_name: primario
+    environment:
+      NODE_ROLE: primario
+      PORT: "8080"
+      BACKUP_URL: "http://backup:8081"   # endereço interno do backup
+      RUST_LOG: "info"
+    ports:
+      - "8080:8080"   # expõe para depuração direta (opcional)
+    networks:
+      - sd-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ── Nó Backup ────────────────────────────────────────────────────────────────
+  backup:
+    build: .
+    container_name: backup
+    environment:
+      NODE_ROLE: backup
+      PORT: "8081"
+      RUST_LOG: "info"
+      # backup não precisa de BACKUP_URL (não replica para ninguém)
+    ports:
+      - "8081:8081"
+    networks:
+      - sd-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ── Nginx (Gateway + Failover) ────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-gateway
+    ports:
+      - "80:80"       # porta pública — clientes acessam aqui
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - primario
+      - backup
+    networks:
+      - sd-net
+    restart: unless-stopped
+
+networks:
+  sd-net:
+    driver: bridge
